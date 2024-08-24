@@ -1,12 +1,12 @@
 import { readFileSync, opendirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
-import { read, createArrayReader } from "./";
+import { readBytes } from "./";
 
 describe("reader", () => {
     const register = (path: string) => {
         const data = new Uint8Array(readFileSync(path));
         it(`read ${path}`, async () => {
-            /*const zip = */ await read(createArrayReader(data));
+            /*const zip = */ await readBytes(data);
 
             /*console.log(zip);
             for (const entry of zip.entries) {

@@ -7,7 +7,7 @@ export interface Reader {
     slice(offset: number, size: number): Promise<Blob>;
 }
 
-export const createArrayReader = (b: Uint8Array): Reader => {
+export const arrayReader = (b: Uint8Array): Reader => {
     return {
         async length(): Promise<number> {
             return b.length;
@@ -21,7 +21,7 @@ export const createArrayReader = (b: Uint8Array): Reader => {
     };
 };
 
-export const createBlobReader = (b: Blob): Reader => {
+export const blobReader = (b: Blob): Reader => {
     return {
         async length(): Promise<number> {
             return b.size;

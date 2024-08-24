@@ -1,4 +1,4 @@
-import { type Reader, read, createArrayReader, createBlobReader } from "./reader";
+import { type Reader, read, arrayReader, blobReader } from "./reader";
 
 export interface Commentable {
     comment: string;
@@ -25,4 +25,7 @@ export interface Entry extends Commentable {
     versionMadeBy: number;
 }
 
-export { Reader, read, createArrayReader, createBlobReader };
+export { Reader, read };
+
+export const readBytes = (b: Uint8Array): Promise<Zip> => read(arrayReader(b));
+export const readBlob = (b: Blob): Promise<Zip> => read(blobReader(b));
