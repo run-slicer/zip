@@ -13,10 +13,6 @@
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
-        },
-        "./*": {
-            "types": "./dist/*.d.ts",
-            "import": "./dist/*.js"
         }
     },
     "files": [
@@ -30,10 +26,14 @@
         "test": "mocha",
         "format": "prettier . --write"
     },
+    "dependencies": {
+        "pako": "^2.1.0"
+    },
     "devDependencies": {
         "@types/chai": "^4.3.17",
         "@types/mocha": "^10.0.7",
         "@types/node": "^22.5.0",
+        "@types/pako": "^2.0.3",
         "chai": "^5.1.1",
         "mocha": "^10.7.3",
         "prettier": "^3.3.3",

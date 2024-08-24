@@ -1,3 +1,5 @@
+import { type Reader, read, createArrayReader, createBlobReader } from "./reader";
+
 export interface Commentable {
     comment: string;
     commentBytes: Uint8Array;
@@ -9,8 +11,9 @@ export interface Zip extends Commentable {
 
 export interface Entry extends Commentable {
     blob(type?: string): Promise<Blob>;
-    arrayBuffer(): Promise<ArrayBuffer>;
+    bytes(): Promise<Uint8Array>;
     text(): Promise<string>;
+
     name: string;
     nameBytes: Uint8Array;
     size: number;
@@ -22,9 +25,4 @@ export interface Entry extends Commentable {
     versionMadeBy: number;
 }
 
-export interface Reader {
-    length(): Promise<number>;
-    read(offset: number, size: number): Promise<Uint8Array>;
-}
-
-export const read = (reader: Reader): Promise<Zip> => {};
+export { Reader, read, createArrayReader, createBlobReader };
