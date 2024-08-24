@@ -1,5 +1,5 @@
 {
-    "name": "@run-slicer/unzip",
+    "name": "@run-slicer/zip",
     "version": "0.1.0",
     "type": "module",
     "author": "run-slicer",
