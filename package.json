@@ -1,0 +1,44 @@
+{
+    "name": "@run-slicer/unzip",
+    "version": "0.1.0",
+    "type": "module",
+    "author": "run-slicer",
+    "license": "MIT",
+    "description": "Random access ZIP manipulation library based on unzipit.",
+    "keywords": [
+        "zip",
+        "reader"
+    ],
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        },
+        "./*": {
+            "types": "./dist/*.d.ts",
+            "import": "./dist/*.js"
+        }
+    },
+    "files": [
+        "./dist/**/*",
+        "package.json",
+        "README.md",
+        "LICENSE"
+    ],
+    "scripts": {
+        "build": "tsc --project tsconfig.build.json",
+        "test": "mocha",
+        "format": "prettier . --write"
+    },
+    "devDependencies": {
+        "@types/chai": "^4.3.17",
+        "@types/mocha": "^10.0.7",
+        "@types/node": "^22.5.0",
+        "chai": "^5.1.1",
+        "mocha": "^10.7.3",
+        "prettier": "^3.3.3",
+        "tsx": "^4.17.0",
+        "typescript": "^5.5.4"
+    },
+    "packageManager": "pnpm@9.8.0+sha512.8e4c3550fb500e808dbc30bb0ce4dd1eb614e30b1c55245f211591ec2cdf9c611cabd34e1364b42f564bd54b3945ed0f49d61d1bbf2ec9bd74b866fcdc723276"
+}
