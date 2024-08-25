@@ -35,6 +35,27 @@ export const blobReader = (b: Blob): Reader => {
     };
 };
 
+const seek = async (reader: Reader, signature: number, initialOffset: number = 0): Promise<number> => {
+    const length = await reader.length();
+
+    let chunkOffset = initialOffset;
+    while (chunkOffset < length) {
+        const buffer = await reader.read(chunkOffset, Math.min(64, length - chunkOffset));
+        const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+        for (let offset = 0; offset < buffer.length; offset += 4) {
+            if (view.getUint32(offset, true) !== signature) {
+                continue;
+            }
+
+            return chunkOffset + offset;
+        }
+        chunkOffset += buffer.length;
+    }
+
+    throw new Error(`Could not find signature 0x${signature.toString(16)}`);
+};
+
 const dosDateTimeToDate = (date: number, time: number): Date => {
     const day = date & 0x1f; // 1-31
     const month = ((date >> 5) & 0xf) - 1; // 1-12, 0-11
@@ -75,13 +96,15 @@ interface RawEntry extends Partial<Entry> {
     fileName?: string;
 }
 
+const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+
 const readEntryDataHeader = async (
     reader: Reader,
     rawEntry: RawEntry
 ): Promise<{ decompress: boolean; fileDataStart: number }> => {
-    if (rawEntry.generalPurposeBitFlag & 0x1) {
-        throw new Error("Encrypted entries not supported");
-    }
+    // if (rawEntry.generalPurposeBitFlag & 0x1) {
+    //     throw new Error("Encrypted entries are not supported");
+    // }
 
     const buffer = await reader.read(rawEntry.relativeOffsetOfLocalHeader, 30);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -91,8 +114,8 @@ const readEntryDataHeader = async (
 
     // 0 - Local file header signature = 0x04034b50
     const signature = bufferView.getUint32(0, true);
-    if (signature !== 0x04034b50) {
-        throw new Error(`Invalid local file header signature 0x${signature.toString(16)}`);
+    if (signature !== LOCAL_FILE_HEADER_SIGNATURE) {
+        throw new Error(`Invalid local file header signature (0x${signature.toString(16)})`);
     }
 
     // all this should be redundant
@@ -143,6 +166,7 @@ const readEntryDataHeader = async (
 };
 
 const CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE = 0x02014b50;
+const ENTRY_HEADER_SIZE = 46;
 
 const readEntries = async (
     reader: Reader,
@@ -152,12 +176,30 @@ const readEntries = async (
     comment: string,
     commentBytes: Uint8Array
 ): Promise<Zip> => {
+    // archives may have arbitrary data in the beginning,
+    // i.e. an executable header for self-extracting ZIPs
+    const zipStart = await seek(reader, LOCAL_FILE_HEADER_SIGNATURE);
+
+    // signature may not be at the actual offset (?), seek forwards
+    centralDirectoryOffset = await seek(
+        reader,
+        CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE,
+        zipStart + centralDirectoryOffset
+    );
+
     const allEntriesBuffer = await reader.read(centralDirectoryOffset, centralDirectorySize);
 
     let readEntryCursor = 0;
     const rawEntries: RawEntry[] = [];
     for (let e = 0; e < rawEntryCount; ++e) {
-        const buffer = new DataView(allEntriesBuffer.buffer, allEntriesBuffer.byteOffset + readEntryCursor, 46);
+        const entryOffset = allEntriesBuffer.byteOffset + readEntryCursor;
+
+        const remaining = allEntriesBuffer.buffer.byteLength - entryOffset;
+        if (remaining < ENTRY_HEADER_SIZE) {
+            break; // not enough remaining bytes for a header, skip
+        }
+
+        const buffer = new DataView(allEntriesBuffer.buffer, entryOffset, ENTRY_HEADER_SIZE);
 
         // 0 - Central directory file header signature
         const signature = buffer.getUint32(0, true);
@@ -199,11 +241,11 @@ const readEntries = async (
             relativeOffsetOfLocalHeader: buffer.getUint32(42, true),
         };
 
-        if (rawEntry.generalPurposeBitFlag & 0x40) {
-            throw new Error("Strong encryption is not supported");
-        }
+        // if (rawEntry.generalPurposeBitFlag & 0x40) {
+        //     throw new Error("Strong encryption is not supported");
+        // }
 
-        readEntryCursor += 46;
+        readEntryCursor += ENTRY_HEADER_SIZE;
 
         const data = allEntriesBuffer.subarray(
             readEntryCursor,
@@ -229,12 +271,12 @@ const readEntries = async (
         while (i < extraFieldBuffer.length - 3) {
             const headerId = extraFieldView.getUint16(i, true);
 
-            const dataSize = extraFieldView.getUint16(i + 2, true);
+            const dataSize = Math.min(extraFieldView.getUint16(i + 2, true), extraFieldBuffer.length);
             const dataStart = i + 4;
             const dataEnd = dataStart + dataSize;
-            if (dataEnd > extraFieldBuffer.length) {
-                throw new Error("Extra field length exceeds extra field buffer size");
-            }
+            // if (dataEnd > extraFieldBuffer.length) {
+            //     throw new Error("Extra field length exceeds extra field buffer size");
+            // }
 
             rawEntry.extraFields.push({
                 id: headerId,
@@ -323,9 +365,8 @@ const readEntries = async (
                 expectedCompressedSize += 12;
             }
             if (rawEntry.compressedSize !== expectedCompressedSize) {
-                throw new Error(
-                    `Compressed size mismatch for stored file: ${rawEntry.compressedSize} != ${expectedCompressedSize}`
-                );
+                rawEntry.compressedSize = expectedCompressedSize;
+                // throw new Error(`Compressed size mismatch for stored file: ${rawEntry.compressedSize} != ${expectedCompressedSize}`);
             }
         }
         rawEntries.push(rawEntry);
@@ -341,7 +382,8 @@ const readEntries = async (
                     reader,
                     lastModDate: dosDateTimeToDate(e.lastModFileDate, e.lastModFileTime),
                     isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
-                    encrypted: !!(e.generalPurposeBitFlag & 0x1),
+                    encrypted:
+                        !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
                     async blob(type: string = "application/octet-stream"): Promise<Blob> {
                         const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
                         if (!decompress) {
@@ -368,6 +410,7 @@ const readEntries = async (
 };
 
 const END_OF_CENTRAL_DIRECTORY_LOCATOR_SIGNATURE = 0x07064b50;
+const ZIP64_EOCDR_SIGNATURE = 0x06064b50;
 
 const readZip64CentralDirectory = async (
     reader: Reader,
@@ -418,7 +461,6 @@ const readZip64CentralDirectory = async (
 const EOCDR_WITHOUT_COMMENT_SIZE = 22;
 const MAX_COMMENT_SIZE = 0xffff; // 2-byte size
 const EOCDR_SIGNATURE = 0x06054b50;
-const ZIP64_EOCDR_SIGNATURE = 0x06064b50;
 
 const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): Promise<Zip> => {
     const size = Math.min(EOCDR_WITHOUT_COMMENT_SIZE + MAX_COMMENT_SIZE, totalLength);
@@ -435,10 +477,10 @@ const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): P
         // 0 - End of central directory signature
         const eocdr = new DataView(data.buffer, data.byteOffset + i, data.byteLength - i);
         // 4 - Number of this disk
-        const diskNumber = eocdr.getUint16(4, true);
-        if (diskNumber !== 0) {
-            throw new Error(`Multi-volume ZIP files are not supported (volume ${diskNumber})`);
-        }
+        // const diskNumber = eocdr.getUint16(4, true);
+        // if (diskNumber !== 0) {
+        //     throw new Error(`Multi-volume ZIP files are not supported (volume ${diskNumber})`);
+        // }
 
         // 6 - Disk where central directory starts
         // 8 - Number of central directory records on this disk
@@ -449,11 +491,11 @@ const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): P
         // 16 - Offset of start of central directory, relative to start of archive
         const centralDirectoryOffset = eocdr.getUint32(16, true);
         // 20 - Comment length
-        const commentLength = eocdr.getUint16(20, true);
-        const expectedCommentLength = eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
-        if (commentLength !== expectedCommentLength) {
-            throw new Error(`Invalid comment length (expected ${expectedCommentLength}, actual ${commentLength})`);
-        }
+        const commentLength = /* eocdr.getUint16(20, true) */ eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
+        // const expectedCommentLength = eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
+        // if (commentLength !== expectedCommentLength) {
+        //     throw new Error(`Invalid comment length (expected ${expectedCommentLength}, actual ${commentLength})`);
+        // }
 
         // 22 - Comment
         // the encoding is always cp437.
