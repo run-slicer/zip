@@ -77,6 +77,7 @@ interface ExtraField {
 }
 
 interface RawEntry extends Partial<Entry> {
+    zipStart: number;
     versionMadeBy: number;
     versionNeededToExtract: number;
     generalPurposeBitFlag: number;
@@ -106,7 +107,14 @@ const readEntryDataHeader = async (
     //     throw new Error("Encrypted entries are not supported");
     // }
 
-    const buffer = await reader.read(rawEntry.relativeOffsetOfLocalHeader, 30);
+    // signature may not be at the actual offset (?), seek forwards
+    const signatureOffset = await seek(
+        reader,
+        LOCAL_FILE_HEADER_SIGNATURE,
+        rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader
+    );
+
+    const buffer = await reader.read(signatureOffset, 30);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     // note: maybe this should be passed in or cached on entry
     // as it's async so there will be at least one tick (not sure about that)
@@ -133,7 +141,7 @@ const readEntryDataHeader = async (
     const extraFieldLength = bufferView.getUint16(28, true);
     // 30 - File name
     // 30+n - Extra field
-    const localFileHeaderEnd = rawEntry.relativeOffsetOfLocalHeader + buffer.length + fileNameLength + extraFieldLength;
+    const localFileHeaderEnd = signatureOffset + buffer.length + fileNameLength + extraFieldLength;
 
     let decompress: boolean;
     if (rawEntry.compressionMethod === 0) {
@@ -208,6 +216,7 @@ const readEntries = async (
         }
 
         const rawEntry: RawEntry = {
+            zipStart,
             // 4 - Version made by
             versionMadeBy: buffer.getUint16(4, true),
             // 6 - Version needed to extract (minimum)
