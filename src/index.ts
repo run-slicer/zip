@@ -16,7 +16,7 @@ export interface Entry extends Commentable {
 
     name: string;
     nameBytes: Uint8Array;
-    size: number;
+    uncompressedSize: number;
     compressedSize: number;
     lastModDate: Date;
     isDirectory: boolean;
