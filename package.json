@@ -1,6 +1,6 @@
 {
     "name": "@run-slicer/zip",
-    "version": "0.1.2",
+    "version": "0.2.0",
     "type": "module",
     "author": "run-slicer",
     "license": "MIT",
@@ -25,9 +25,6 @@
         "build": "tsc --project tsconfig.build.json",
         "test": "mocha",
         "format": "prettier . --write"
-    },
-    "dependencies": {
-        "pako": "^2.1.0"
     },
     "devDependencies": {
         "@types/chai": "^4.3.17",

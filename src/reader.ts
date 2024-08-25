@@ -1,5 +1,5 @@
 import type { Entry, Zip } from "./";
-import { inflateRaw } from "pako";
+import { inflateRaw } from "./deflate";
 
 export interface Reader {
     length(): Promise<number>;
@@ -400,7 +400,7 @@ const readEntries = async (
                         }
 
                         const data = await reader.read(fileDataStart, e.compressedSize);
-                        return new Blob([inflateRaw(data)], { type });
+                        return new Blob([await inflateRaw(data)], { type });
                     },
                     async bytes(): Promise<Uint8Array> {
                         const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
