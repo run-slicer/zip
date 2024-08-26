@@ -10,12 +10,8 @@ describe("reader", () => {
 
             console.log(zip);
             /*for (const entry of zip.entries) {
-                if (entry.name.endsWith(".png")) {
-                    try {
-                        await entry.text();
-                    } catch (e) {
-                        console.log("failed", entry.name);
-                    }
+                if (entry.name.endsWith(".java")) {
+                    console.log(await entry.text());
                 }
             }*/
         });
