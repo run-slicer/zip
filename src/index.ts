@@ -2,7 +2,7 @@ import { type Reader, read, arrayReader, blobReader } from "./reader";
 
 export interface Commentable {
     comment: string;
-    commentBytes: Uint8Array;
+    rawComment: Uint8Array;
 }
 
 export interface Zip extends Commentable {
@@ -14,8 +14,13 @@ export interface Entry extends Commentable {
     bytes(): Promise<Uint8Array>;
     text(): Promise<string>;
 
+    // "File name" field
     name: string;
-    nameBytes: Uint8Array;
+    rawName: Uint8Array;
+    // Unicode Path Extra Field
+    fileName?: string;
+    rawFileName?: Uint8Array;
+
     uncompressedSize: number;
     compressedSize: number;
     lastModDate: Date;
@@ -27,5 +32,15 @@ export interface Entry extends Commentable {
 
 export { Reader, read };
 
-export const readBytes = (b: Uint8Array): Promise<Zip> => read(arrayReader(b));
-export const readBlob = (b: Blob): Promise<Zip> => read(blobReader(b));
+// shorthands for the core API
+
+export interface ReadOptions {
+    encoding?: string;
+}
+
+const read0 = (reader: Reader, options?: ReadOptions): Promise<Zip> => {
+    return read(reader, options?.encoding ? new TextDecoder(options.encoding) : undefined);
+};
+
+export const readBytes = (b: Uint8Array, options?: ReadOptions): Promise<Zip> => read0(arrayReader(b), options);
+export const readBlob = (b: Blob, options?: ReadOptions): Promise<Zip> => read0(blobReader(b), options);

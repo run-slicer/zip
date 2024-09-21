@@ -6,11 +6,11 @@ describe("reader", () => {
     const register = (path: string) => {
         const data = new Uint8Array(readFileSync(path));
         it(`read ${path}`, async () => {
-            const zip = await readBytes(data);
+            /*const zip = */ await readBytes(data /*, { encoding: "shift-jis" }*/);
 
-            console.log(zip);
-            /*for (const entry of zip.entries) {
-                if (entry.name.endsWith(".java")) {
+            /*console.log(zip);
+            for (const entry of zip.entries) {
+                if (entry.name.endsWith(".txt")) {
                     console.log(await entry.text());
                 }
             }*/

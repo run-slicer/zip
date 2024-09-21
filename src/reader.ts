@@ -69,8 +69,6 @@ const dosDateTimeToDate = (date: number, time: number): Date => {
     return new Date(year, month, day, hour, minute, second, millisecond);
 };
 
-const decoder = new TextDecoder();
-
 interface ExtraField {
     id: number;
     data: Uint8Array;
@@ -94,8 +92,9 @@ interface RawEntry extends Partial<Entry> {
     externalFileAttributes: number;
     relativeOffsetOfLocalHeader: number;
     extraFields?: ExtraField[];
-    fileName?: string;
 }
+
+const utf8Decoder = new TextDecoder();
 
 const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
 
@@ -178,11 +177,12 @@ const ENTRY_HEADER_SIZE = 46;
 
 const readEntries = async (
     reader: Reader,
+    decoder: TextDecoder,
     centralDirectoryOffset: number,
     centralDirectorySize: number,
     rawEntryCount: number,
     comment: string,
-    commentBytes: Uint8Array
+    rawComment: Uint8Array
 ): Promise<Zip> => {
     // archives may have arbitrary data in the beginning,
     // i.e. an executable header for self-extracting ZIPs
@@ -262,9 +262,9 @@ const readEntries = async (
         );
 
         // 46 - File name
-        // const isUTF8 = (rawEntry.generalPurposeBitFlag & 0x800) !== 0;
-        rawEntry.nameBytes = data.subarray(0, rawEntry.fileNameLength);
-        rawEntry.name = decoder.decode(rawEntry.nameBytes);
+        const isUTF8 = (rawEntry.generalPurposeBitFlag & 0x800) !== 0;
+        rawEntry.rawName = data.subarray(0, rawEntry.fileNameLength);
+        rawEntry.name = (isUTF8 ? utf8Decoder : decoder).decode(rawEntry.rawName);
 
         // 46+n - Extra field
         const fileCommentStart = rawEntry.fileNameLength + rawEntry.extraFieldLength;
@@ -295,8 +295,8 @@ const readEntries = async (
         }
 
         // 46+n+m - File comment
-        rawEntry.commentBytes = data.subarray(fileCommentStart, fileCommentStart + rawEntry.fileCommentLength);
-        rawEntry.comment = decoder.decode(rawEntry.commentBytes);
+        rawEntry.rawComment = data.subarray(fileCommentStart, fileCommentStart + rawEntry.fileCommentLength);
+        rawEntry.comment = decoder.decode(rawEntry.rawComment);
 
         readEntryCursor += data.length;
 
@@ -363,7 +363,8 @@ const readEntries = async (
         // > ignored and the File Name field in the header should be used instead.
         if (nameField) {
             // UnicodeName Variable UTF-8 version of the entry File Name
-            rawEntry.fileName = decoder.decode(nameField.data.subarray(5));
+            rawEntry.rawFileName = nameField.data.subarray(5);
+            rawEntry.fileName = utf8Decoder.decode(rawEntry.rawFileName);
         }
 
         // validate file size
@@ -383,7 +384,7 @@ const readEntries = async (
 
     return {
         comment,
-        commentBytes,
+        rawComment,
         entries: rawEntries.map(
             (e) =>
                 ({
@@ -423,9 +424,10 @@ const ZIP64_EOCDR_SIGNATURE = 0x06064b50;
 
 const readZip64CentralDirectory = async (
     reader: Reader,
+    decoder: TextDecoder,
     offset: number,
     comment: string,
-    commentBytes: Uint8Array
+    rawComment: Uint8Array
 ): Promise<Zip> => {
     // ZIP64 end of central directory locator
     const zip64EocdlOffset = offset - 20;
@@ -464,14 +466,14 @@ const readZip64CentralDirectory = async (
     // 48 - offset of start of central directory with respect to the starting disk number     8 bytes
     const centralDirectoryOffset = Number(zip64Eocdr.getBigUint64(48, true));
     // 56 - zip64 extensible data sector                                (variable size)
-    return readEntries(reader, centralDirectoryOffset, centralDirectorySize, entryCount, comment, commentBytes);
+    return readEntries(reader, decoder, centralDirectoryOffset, centralDirectorySize, entryCount, comment, rawComment);
 };
 
 const EOCDR_WITHOUT_COMMENT_SIZE = 22;
 const MAX_COMMENT_SIZE = 0xffff; // 2-byte size
 const EOCDR_SIGNATURE = 0x06054b50;
 
-const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): Promise<Zip> => {
+const findEndOfCentralDirectory = async (reader: Reader, decoder: TextDecoder, totalLength: number): Promise<Zip> => {
     const size = Math.min(EOCDR_WITHOUT_COMMENT_SIZE + MAX_COMMENT_SIZE, totalLength);
     const readStart = totalLength - size;
 
@@ -508,19 +510,20 @@ const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): P
 
         // 22 - Comment
         // the encoding is always cp437.
-        const commentBytes = new Uint8Array(eocdr.buffer, eocdr.byteOffset + 22, commentLength);
-        const comment = decoder.decode(commentBytes);
+        const rawComment = new Uint8Array(eocdr.buffer, eocdr.byteOffset + 22, commentLength);
+        const comment = decoder.decode(rawComment);
 
         if (entryCount === 0xffff || centralDirectoryOffset === 0xffffffff) {
-            return await readZip64CentralDirectory(reader, readStart + i, comment, commentBytes);
+            return await readZip64CentralDirectory(reader, decoder, readStart + i, comment, rawComment);
         } else {
             return await readEntries(
                 reader,
+                decoder,
                 centralDirectoryOffset,
                 centralDirectorySize,
                 entryCount,
                 comment,
-                commentBytes
+                rawComment
             );
         }
     }
@@ -528,11 +531,11 @@ const findEndOfCentralDirectory = async (reader: Reader, totalLength: number): P
     throw new Error("Could not find end of central directory, maybe not a ZIP file?");
 };
 
-export const read = async (reader: Reader): Promise<Zip> => {
+export const read = async (reader: Reader, decoder: TextDecoder = utf8Decoder): Promise<Zip> => {
     const len = await reader.length();
     if (len > Number.MAX_SAFE_INTEGER) {
         throw new Error(`File too large (size ${len}), only file sizes up to 4503599627370496 bytes are supported`);
     }
 
-    return await findEndOfCentralDirectory(reader, len);
+    return await findEndOfCentralDirectory(reader, decoder, len);
 };
