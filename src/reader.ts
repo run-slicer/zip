@@ -74,8 +74,14 @@ interface ExtraField {
     data: Uint8Array;
 }
 
-interface RawEntry extends Partial<Entry> {
+interface RawEntry {
     zipStart: number;
+    rawName?: Uint8Array;
+    name?: string;
+    rawComment?: Uint8Array;
+    comment?: string;
+    rawFileName?: Uint8Array;
+    fileName?: string;
     versionMadeBy: number;
     versionNeededToExtract: number;
     generalPurposeBitFlag: number;
@@ -385,37 +391,42 @@ const readEntries = async (
     return {
         comment,
         rawComment,
-        entries: rawEntries.map(
-            (e) =>
-                ({
-                    ...e,
-                    reader,
-                    lastModDate: dosDateTimeToDate(e.lastModFileDate, e.lastModFileTime),
-                    isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
-                    encrypted:
-                        !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
-                    async blob(type: string = "application/octet-stream"): Promise<Blob> {
-                        const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
-                        if (!decompress) {
-                            return reader.slice(fileDataStart, e.compressedSize);
-                        }
+        entries: rawEntries.map((e: RawEntry): Entry => {
+            return {
+                comment: e.comment,
+                compressedSize: e.compressedSize,
+                externalFileAttributes: e.externalFileAttributes,
+                name: e.name,
+                rawComment: e.rawComment,
+                rawName: e.rawName,
+                uncompressedSize: e.uncompressedSize,
+                versionMadeBy: e.versionMadeBy,
+                lastModDate: dosDateTimeToDate(e.lastModFileDate, e.lastModFileTime),
+                isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
+                encrypted:
+                    !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
+                async blob(type: string = "application/octet-stream"): Promise<Blob> {
+                    const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
+                    if (!decompress) {
+                        return reader.slice(fileDataStart, e.compressedSize);
+                    }
 
-                        const data = await reader.read(fileDataStart, e.compressedSize);
-                        return new Blob([inflateRaw(data)], { type });
-                    },
-                    async bytes(): Promise<Uint8Array> {
-                        const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
-                        if (!decompress) {
-                            return reader.read(fileDataStart, e.compressedSize);
-                        }
+                    const data = await reader.read(fileDataStart, e.compressedSize);
+                    return new Blob([inflateRaw(data)], { type });
+                },
+                async bytes(): Promise<Uint8Array> {
+                    const { decompress, fileDataStart } = await readEntryDataHeader(reader, e);
+                    if (!decompress) {
+                        return reader.read(fileDataStart, e.compressedSize);
+                    }
 
-                        return inflateRaw(await reader.read(fileDataStart, e.compressedSize));
-                    },
-                    async text(): Promise<string> {
-                        return decoder.decode(await this.bytes());
-                    },
-                }) as Entry
-        ),
+                    return inflateRaw(await reader.read(fileDataStart, e.compressedSize));
+                },
+                async text(): Promise<string> {
+                    return decoder.decode(await this.bytes());
+                },
+            };
+        }),
     };
 };
 
