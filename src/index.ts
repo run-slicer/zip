@@ -1,5 +1,5 @@
 import { type Reader, read, arrayReader, blobReader } from "./reader";
-import type { Decompressor } from "./compress";
+import { type Decompressor, streamDecompressor } from "./decompress";
 
 export interface Commentable {
     comment: string;
@@ -36,7 +36,7 @@ export interface ReadOptions {
     decompressor?: Decompressor;
 }
 
-export { Reader, read };
+export { Reader, read, Decompressor, streamDecompressor };
 
 // shorthands for the core API
 

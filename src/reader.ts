@@ -1,5 +1,5 @@
 import type { Entry, Zip, ReadOptions } from "./";
-import { streamDecompressor } from "./compress";
+import { streamDecompressor } from "./decompress";
 
 export interface Reader {
     length(): Promise<number>;
