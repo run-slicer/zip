@@ -1,4 +1,5 @@
 import { type Reader, read, arrayReader, blobReader } from "./reader";
+import type { Decompressor } from "./compress";
 
 export interface Commentable {
     comment: string;
@@ -30,17 +31,14 @@ export interface Entry extends Commentable {
     versionMadeBy: number;
 }
 
+export interface ReadOptions {
+    decoder?: TextDecoder;
+    decompressor?: Decompressor;
+}
+
 export { Reader, read };
 
 // shorthands for the core API
 
-export interface ReadOptions {
-    encoding?: string;
-}
-
-const read0 = (reader: Reader, options?: ReadOptions): Promise<Zip> => {
-    return read(reader, options?.encoding ? new TextDecoder(options.encoding) : undefined);
-};
-
-export const readBytes = (b: Uint8Array, options?: ReadOptions): Promise<Zip> => read0(arrayReader(b), options);
-export const readBlob = (b: Blob, options?: ReadOptions): Promise<Zip> => read0(blobReader(b), options);
+export const readBytes = (b: Uint8Array, options?: ReadOptions): Promise<Zip> => read(arrayReader(b), options);
+export const readBlob = (b: Blob, options?: ReadOptions): Promise<Zip> => read(blobReader(b), options);

@@ -1,6 +1,6 @@
 {
     "name": "@run-slicer/zip",
-    "version": "0.4.1",
+    "version": "0.5.0",
     "type": "module",
     "author": "run-slicer",
     "license": "MIT",
@@ -26,19 +26,16 @@
         "test": "mocha",
         "format": "prettier . --write"
     },
-    "dependencies": {
-        "pako": "^2.1.0"
-    },
     "devDependencies": {
         "@types/chai": "^5.0.1",
         "@types/mocha": "^10.0.10",
-        "@types/node": "^22.9.1",
+        "@types/node": "^22.10.5",
         "@types/pako": "^2.0.3",
         "chai": "^5.1.2",
-        "mocha": "^10.8.2",
-        "prettier": "^3.3.3",
+        "mocha": "^11.0.1",
+        "prettier": "^3.4.2",
         "tsx": "^4.19.2",
-        "typescript": "^5.6.3"
+        "typescript": "^5.7.3"
     },
-    "packageManager": "pnpm@9.14.2+sha512.6e2baf77d06b9362294152c851c4f278ede37ab1eba3a55fda317a4a17b209f4dbb973fb250a77abc463a341fcb1f17f17cfa24091c4eb319cda0d9b84278387"
+    "packageManager": "pnpm@9.15.3+sha512.1f79bc245a66eb0b07c5d4d83131240774642caaa86ef7d0434ab47c0d16f66b04e21e0c086eb61e62c77efc4d7f7ec071afad3796af64892fae66509173893a"
 }
