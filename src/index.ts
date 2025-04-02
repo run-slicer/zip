@@ -22,6 +22,7 @@ export interface Entry extends Commentable {
     fileName?: string;
     rawFileName?: Uint8Array;
 
+    compressionMethod: number;
     uncompressedSize: number;
     compressedSize: number;
     lastModDate: Date;

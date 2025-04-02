@@ -6,16 +6,16 @@ describe("reader", () => {
     const register = (path: string) => {
         const data = new Uint8Array(readFileSync(path));
         it(`read ${path}`, async () => {
-            /*const zip = */ await readBytes(data /*, { decoder: new TextDecoder("shift-jis") }*/);
+            const zip = await readBytes(data /*, { decoder: new TextDecoder("shift-jis") }*/);
 
-            /*console.log(zip);
+            console.log(zip);
             for (const entry of zip.entries) {
                 try {
                     await entry.bytes();
                 } catch (e) {
                     console.error(`failed to read ${entry.name}`, e);
                 }
-            }*/
+            }
         });
     };
 

@@ -173,6 +173,7 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         name: e.name,
         rawComment: e.rawComment,
         rawName: e.rawName,
+        compressionMethod: e.compressionMethod,
         uncompressedSize: e.uncompressedSize,
         versionMadeBy: e.versionMadeBy,
         lastModDate: dosDateTimeToDate(e.lastModFileDate, e.lastModFileTime),
