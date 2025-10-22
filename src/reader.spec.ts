@@ -14,6 +14,8 @@ describe("reader", () => {
                     await entry.bytes();
                 } catch (e) {
                     console.error(`failed to read ${entry.name}`, e);
+
+                    // console.log(entry);
                 }
             }
         });
