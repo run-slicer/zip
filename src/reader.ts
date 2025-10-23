@@ -82,7 +82,7 @@ interface RawEntry {
     comment?: string;
     rawFileName?: Uint8Array;
     fileName?: string;
-    versionMadeBy: number;
+    versionMadeBy?: number;
     versionNeededToExtract: number;
     generalPurposeBitFlag: number;
     compressionMethod: number;
@@ -94,8 +94,8 @@ interface RawEntry {
     fileNameLength: number;
     extraFieldLength: number;
     fileCommentLength: number;
-    internalFileAttributes: number;
-    externalFileAttributes: number;
+    internalFileAttributes?: number;
+    externalFileAttributes?: number;
     relativeOffsetOfLocalHeader: number;
     extraFields?: ExtraField[];
 }
@@ -103,6 +103,7 @@ interface RawEntry {
 const utf8Decoder = new TextDecoder();
 
 const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
+const LOCAL_FILE_HEADER_SIZE = 30;
 
 interface EntryHeader {
     start: number;
@@ -121,7 +122,7 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
         rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader
     );
 
-    const buffer = await reader.read(signatureOffset, 30);
+    const buffer = await reader.read(signatureOffset, LOCAL_FILE_HEADER_SIZE);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     // note: maybe this should be passed in or cached on entry
     // as it's async so there will be at least one tick (not sure about that)
@@ -181,6 +182,9 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         encrypted: !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
         async blob(type: string = "application/octet-stream"): Promise<Blob> {
             const { start, length } = await readEntryDataHeader(reader, e);
+            if (length === 0) {
+                return new Blob([], { type });
+            }
             if (e.compressionMethod === 0) {
                 // no compression (stored)
                 return reader.slice(start, length);
@@ -195,6 +199,9 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         },
         async bytes(): Promise<Uint8Array> {
             const { start, length } = await readEntryDataHeader(reader, e);
+            if (length === 0) {
+                return new Uint8Array(0);
+            }
             if (e.compressionMethod === 0) {
                 // no compression (stored)
                 return reader.read(start, length);
@@ -209,6 +216,183 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         async text(): Promise<string> {
             return options.decoder!.decode(await this.bytes());
         },
+    };
+};
+
+const readCommonData = (rawEntry: RawEntry, data: Uint8Array, options: ReadOptions) => {
+    // File name
+    const isUTF8 = (rawEntry.generalPurposeBitFlag & 0x800) !== 0;
+    rawEntry.rawName = data.subarray(0, rawEntry.fileNameLength);
+    rawEntry.name = (isUTF8 ? utf8Decoder : options.decoder!).decode(rawEntry.rawName);
+
+    // Extra field
+    const fileCommentStart = rawEntry.fileNameLength + rawEntry.extraFieldLength;
+    const extraFieldBuffer = data.subarray(rawEntry.fileNameLength, fileCommentStart);
+    const extraFieldView = new DataView(
+        extraFieldBuffer.buffer,
+        extraFieldBuffer.byteOffset,
+        extraFieldBuffer.byteLength
+    );
+    rawEntry.extraFields = [];
+
+    let i = 0;
+    while (i < extraFieldBuffer.length - 4) {
+        const headerId = extraFieldView.getUint16(i, true);
+
+        const dataSize = Math.min(extraFieldView.getUint16(i + 2, true), extraFieldBuffer.length - i - 4);
+        const dataStart = i + 4;
+        const dataEnd = dataStart + dataSize;
+        // if (dataEnd > extraFieldBuffer.length) {
+        //     throw new Error("Extra field length exceeds extra field buffer size");
+        // }
+
+        rawEntry.extraFields.push({
+            id: headerId,
+            data: extraFieldBuffer.subarray(dataStart, dataEnd),
+        });
+        i = dataEnd;
+    }
+
+    // File comment
+    rawEntry.rawComment = data.subarray(fileCommentStart, fileCommentStart + rawEntry.fileCommentLength);
+    rawEntry.comment = options.decoder!.decode(rawEntry.rawComment);
+
+    if (
+        rawEntry.uncompressedSize === 0xffffffff ||
+        rawEntry.compressedSize === 0xffffffff ||
+        rawEntry.relativeOffsetOfLocalHeader === 0xffffffff
+    ) {
+        // ZIP64 format
+        // find the Zip64 Extended Information Extra Field
+        const zip64ExtraField = rawEntry.extraFields.find((e) => e.id === 0x0001);
+        if (!zip64ExtraField) {
+            throw new Error("Expected zip64 extended information extra field");
+        }
+
+        const zip64EiefBuffer = new DataView(
+            zip64ExtraField.data.buffer,
+            zip64ExtraField.data.byteOffset,
+            zip64ExtraField.data.byteLength
+        );
+
+        let index = 0;
+        // 0 - Original Size          8 bytes
+        if (rawEntry.uncompressedSize === 0xffffffff) {
+            if (index + 8 > zip64EiefBuffer.byteLength) {
+                throw new Error("zip64 extended information extra field does not include uncompressed size");
+            }
+
+            rawEntry.uncompressedSize = Number(zip64EiefBuffer.getBigUint64(index, true));
+            index += 8;
+        }
+        // 8 - Compressed Size        8 bytes
+        if (rawEntry.compressedSize === 0xffffffff) {
+            if (index + 8 > zip64EiefBuffer.byteLength) {
+                throw new Error("zip64 extended information extra field does not include compressed size");
+            }
+
+            rawEntry.compressedSize = Number(zip64EiefBuffer.getBigUint64(index, true));
+            index += 8;
+        }
+        // 16 - Relative Header Offset 8 bytes
+        if (rawEntry.relativeOffsetOfLocalHeader === 0xffffffff) {
+            if (index + 8 > zip64EiefBuffer.byteLength) {
+                throw new Error("zip64 extended information extra field does not include relative header offset");
+            }
+
+            rawEntry.relativeOffsetOfLocalHeader = Number(zip64EiefBuffer.getBigUint64(index, true));
+            // index += 8;
+        }
+        // 24 - Disk Start Number      4 bytes
+    }
+
+    // check for Info-ZIP Unicode Path Extra Field (0x7075)
+    // see https://github.com/thejoshwolfe/yauzl/issues/33
+    const nameField = rawEntry.extraFields.find(
+        (e) =>
+            e.id === 0x7075 &&
+            e.data.length >= 6 && // too short to be meaningful
+            e.data[0] === 1 && // Version       1 byte      version of this extra field, currently 1
+            new DataView(e.data.buffer, e.data.byteOffset, e.data.byteLength).getUint32(1, true),
+        0 // crc.unsigned(rawEntry.nameBytes)
+    ); // NameCRC32     4 bytes     File Name Field CRC32 Checksum
+    // > If the CRC check fails, this UTF-8 Path Extra Field should be
+    // > ignored and the File Name field in the header should be used instead.
+    if (nameField) {
+        // UnicodeName Variable UTF-8 version of the entry File Name
+        rawEntry.rawFileName = nameField.data.subarray(5);
+        rawEntry.fileName = utf8Decoder.decode(rawEntry.rawFileName);
+    }
+
+    // validate file size
+    if (rawEntry.compressionMethod === 0) {
+        let expectedCompressedSize = rawEntry.uncompressedSize;
+        if ((rawEntry.generalPurposeBitFlag & 0x1) !== 0) {
+            // traditional encryption prefixes the file data with a header
+            expectedCompressedSize += 12;
+        }
+        if (rawEntry.compressedSize !== expectedCompressedSize) {
+            rawEntry.compressedSize = expectedCompressedSize;
+            // throw new Error(`Compressed size mismatch for stored file: ${rawEntry.compressedSize} != ${expectedCompressedSize}`);
+        }
+    }
+};
+
+const readLocalEntries = async (reader: Reader, options: ReadOptions): Promise<Zip> => {
+    let offset = 0;
+    const rawEntries: RawEntry[] = [];
+    while (true) {
+        try {
+            offset = await seek(reader, LOCAL_FILE_HEADER_SIGNATURE, offset);
+        } catch (e) {
+            break; // no more entries
+        }
+
+        const rawBuffer = await reader.read(offset, LOCAL_FILE_HEADER_SIZE);
+        const buffer = new DataView(rawBuffer.buffer, rawBuffer.byteOffset, LOCAL_FILE_HEADER_SIZE);
+
+        // 0 - Local file header signature = 0x04034b50
+        const rawEntry: RawEntry = {
+            zipStart: 0,
+            // 4 - Version needed to extract (minimum)
+            versionNeededToExtract: buffer.getUint16(4, true),
+            // 6 - General purpose bit flag
+            generalPurposeBitFlag: buffer.getUint16(6, true),
+            // 8 - Compression method
+            compressionMethod: buffer.getUint16(8, true),
+            // 10 - File last modification time
+            lastModFileTime: buffer.getUint16(10, true),
+            // 12 - File last modification date
+            lastModFileDate: buffer.getUint16(12, true),
+            // 14 - CRC-32
+            crc32: buffer.getUint32(14, true),
+            // 18 - Compressed size
+            compressedSize: buffer.getUint32(18, true),
+            // 22 - Uncompressed size
+            uncompressedSize: buffer.getUint32(22, true),
+            // 26 - File name length (n)
+            fileNameLength: buffer.getUint16(26, true),
+            // 28 - Extra field length (m)
+            extraFieldLength: buffer.getUint16(28, true),
+            fileCommentLength: 0,
+            relativeOffsetOfLocalHeader: offset,
+        };
+
+        offset += LOCAL_FILE_HEADER_SIZE;
+
+        const data = await reader.read(offset, rawEntry.fileNameLength + rawEntry.extraFieldLength);
+
+        offset += data.byteLength;
+        readCommonData(rawEntry, data, options);
+
+        offset += rawEntry.compressedSize;
+        rawEntries.push(rawEntry);
+    }
+
+    return {
+        comment: "",
+        rawComment: new Uint8Array(0),
+        entries: rawEntries.map((e) => createEntry(e, reader, options)),
     };
 };
 
@@ -301,124 +485,9 @@ const readEntries = async (
             readEntryCursor + rawEntry.fileNameLength + rawEntry.extraFieldLength + rawEntry.fileCommentLength
         );
 
-        // 46 - File name
-        const isUTF8 = (rawEntry.generalPurposeBitFlag & 0x800) !== 0;
-        rawEntry.rawName = data.subarray(0, rawEntry.fileNameLength);
-        rawEntry.name = (isUTF8 ? utf8Decoder : options.decoder!).decode(rawEntry.rawName);
-
-        // 46+n - Extra field
-        const fileCommentStart = rawEntry.fileNameLength + rawEntry.extraFieldLength;
-        const extraFieldBuffer = data.subarray(rawEntry.fileNameLength, fileCommentStart);
-        const extraFieldView = new DataView(
-            extraFieldBuffer.buffer,
-            extraFieldBuffer.byteOffset,
-            extraFieldBuffer.byteLength
-        );
-        rawEntry.extraFields = [];
-
-        let i = 0;
-        while (i < extraFieldBuffer.length - 3) {
-            const headerId = extraFieldView.getUint16(i, true);
-
-            const dataSize = Math.min(extraFieldView.getUint16(i + 2, true), extraFieldBuffer.length);
-            const dataStart = i + 4;
-            const dataEnd = dataStart + dataSize;
-            // if (dataEnd > extraFieldBuffer.length) {
-            //     throw new Error("Extra field length exceeds extra field buffer size");
-            // }
-
-            rawEntry.extraFields.push({
-                id: headerId,
-                data: extraFieldBuffer.subarray(dataStart, dataEnd),
-            });
-            i = dataEnd;
-        }
-
-        // 46+n+m - File comment
-        rawEntry.rawComment = data.subarray(fileCommentStart, fileCommentStart + rawEntry.fileCommentLength);
-        rawEntry.comment = options.decoder!.decode(rawEntry.rawComment);
-
         readEntryCursor += data.length;
+        readCommonData(rawEntry, data, options);
 
-        if (
-            rawEntry.uncompressedSize === 0xffffffff ||
-            rawEntry.compressedSize === 0xffffffff ||
-            rawEntry.relativeOffsetOfLocalHeader === 0xffffffff
-        ) {
-            // ZIP64 format
-            // find the Zip64 Extended Information Extra Field
-            const zip64ExtraField = rawEntry.extraFields.find((e) => e.id === 0x0001);
-            if (!zip64ExtraField) {
-                throw new Error("Expected zip64 extended information extra field");
-            }
-
-            const zip64EiefBuffer = new DataView(
-                zip64ExtraField.data.buffer,
-                zip64ExtraField.data.byteOffset,
-                zip64ExtraField.data.byteLength
-            );
-
-            let index = 0;
-            // 0 - Original Size          8 bytes
-            if (rawEntry.uncompressedSize === 0xffffffff) {
-                if (index + 8 > zip64EiefBuffer.byteLength) {
-                    throw new Error("zip64 extended information extra field does not include uncompressed size");
-                }
-
-                rawEntry.uncompressedSize = Number(zip64EiefBuffer.getBigUint64(index, true));
-                index += 8;
-            }
-            // 8 - Compressed Size        8 bytes
-            if (rawEntry.compressedSize === 0xffffffff) {
-                if (index + 8 > zip64EiefBuffer.byteLength) {
-                    throw new Error("zip64 extended information extra field does not include compressed size");
-                }
-
-                rawEntry.compressedSize = Number(zip64EiefBuffer.getBigUint64(index, true));
-                index += 8;
-            }
-            // 16 - Relative Header Offset 8 bytes
-            if (rawEntry.relativeOffsetOfLocalHeader === 0xffffffff) {
-                if (index + 8 > zip64EiefBuffer.byteLength) {
-                    throw new Error("zip64 extended information extra field does not include relative header offset");
-                }
-
-                rawEntry.relativeOffsetOfLocalHeader = Number(zip64EiefBuffer.getBigUint64(index, true));
-                index += 8;
-            }
-            // 24 - Disk Start Number      4 bytes
-        }
-
-        // check for Info-ZIP Unicode Path Extra Field (0x7075)
-        // see https://github.com/thejoshwolfe/yauzl/issues/33
-        const nameField = rawEntry.extraFields.find(
-            (e) =>
-                e.id === 0x7075 &&
-                e.data.length >= 6 && // too short to be meaningful
-                e.data[0] === 1 && // Version       1 byte      version of this extra field, currently 1
-                new DataView(e.data.buffer, e.data.byteOffset, e.data.byteLength).getUint32(1, true),
-            0 // crc.unsigned(rawEntry.nameBytes)
-        ); // NameCRC32     4 bytes     File Name Field CRC32 Checksum
-        // > If the CRC check fails, this UTF-8 Path Extra Field should be
-        // > ignored and the File Name field in the header should be used instead.
-        if (nameField) {
-            // UnicodeName Variable UTF-8 version of the entry File Name
-            rawEntry.rawFileName = nameField.data.subarray(5);
-            rawEntry.fileName = utf8Decoder.decode(rawEntry.rawFileName);
-        }
-
-        // validate file size
-        if (rawEntry.compressionMethod === 0) {
-            let expectedCompressedSize = rawEntry.uncompressedSize;
-            if ((rawEntry.generalPurposeBitFlag & 0x1) !== 0) {
-                // traditional encryption prefixes the file data with a header
-                expectedCompressedSize += 12;
-            }
-            if (rawEntry.compressedSize !== expectedCompressedSize) {
-                rawEntry.compressedSize = expectedCompressedSize;
-                // throw new Error(`Compressed size mismatch for stored file: ${rawEntry.compressedSize} != ${expectedCompressedSize}`);
-            }
-        }
         rawEntries.push(rawEntry);
     }
 
@@ -538,7 +607,7 @@ const findEndOfCentralDirectory = async (reader: Reader, options: ReadOptions, t
         }
     }
 
-    throw new Error("Could not find end of central directory, maybe not a ZIP file?");
+    return await readLocalEntries(reader, options);
 };
 
 export const read = async (reader: Reader, options: ReadOptions = {}): Promise<Zip> => {
