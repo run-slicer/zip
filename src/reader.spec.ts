@@ -11,6 +11,7 @@ describe("reader", () => {
             console.log(zip);
             for (const entry of zip.entries) {
                 try {
+                    await entry.blob();
                     await entry.bytes();
                 } catch (e) {
                     console.error(`failed to read ${entry.name}`, e);

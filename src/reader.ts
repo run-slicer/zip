@@ -194,8 +194,12 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
                 throw new Error(`No decompressor available (method ${e.compressionMethod})`);
             }
 
-            const data = await reader.read(start, length);
-            return new Blob([await options.decompressor(e.compressionMethod, data)], { type });
+            const data = await options.decompressor(e.compressionMethod, await reader.read(start, length));
+
+            // SharedArrayBuffer cannot be used in Blob, so check for it
+            const withoutSAB =
+                data.buffer instanceof SharedArrayBuffer ? new Uint8Array(data) : (data as Uint8Array<ArrayBuffer>);
+            return new Blob([withoutSAB], { type });
         },
         async bytes(): Promise<Uint8Array> {
             const { start, length } = await readEntryDataHeader(reader, e);

@@ -6,6 +6,12 @@ export const streamDecompressor: Decompressor = async (method, data) => {
         throw new Error(`Unsupported compression method (${method})`);
     }
 
-    const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    const stream = new ReadableStream({
+        start(controller) {
+            controller.enqueue(data);
+            controller.close();
+        },
+    });
+
+    return new Uint8Array(await new Response(stream.pipeThrough(new DecompressionStream("deflate-raw"))).arrayBuffer());
 };
