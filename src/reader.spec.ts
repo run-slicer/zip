@@ -1,6 +1,7 @@
 import { readFileSync, opendirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { readBytes } from "./";
+import { expect } from "chai";
 
 describe("reader", () => {
     const register = (path: string) => {
@@ -9,14 +10,14 @@ describe("reader", () => {
             const zip = await readBytes(data /*, { decoder: new TextDecoder("shift-jis") }*/);
 
             console.log(zip);
+            expect(zip.entries.length).greaterThan(0);
             for (const entry of zip.entries) {
                 try {
                     await entry.blob();
                     await entry.bytes();
                 } catch (e) {
-                    console.error(`failed to read ${entry.name}`, e);
-
-                    // console.log(entry);
+                    console.log(entry);
+                    throw e;
                 }
             }
         });
@@ -29,7 +30,7 @@ describe("reader", () => {
         while ((entry = dir.readSync()) !== null) {
             const childPath = join(path, entry.name);
 
-            if (entry.isFile() && entry.name.endsWith(".zip")) {
+            if (entry.isFile()) {
                 register(childPath);
             } else if (entry.isDirectory()) {
                 walk(childPath);

@@ -135,14 +135,19 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
     }
 
     // all this should be redundant
+    // except some ZIP writers lie in the central directory, so get the actual size from the local file header
+
     // 4 - Version needed to extract (minimum)
     // 6 - General purpose bit flag
     // 8 - Compression method
+    const compressionMethod = bufferView.getUint16(8, true);
     // 10 - File last modification time
     // 12 - File last modification date
     // 14 - CRC-32
-    // 18 - Compressed size
     // 22 - Uncompressed size
+    const uncompressedSize = bufferView.getUint32(22, true);
+    // 18 - Compressed size
+    const compressedSize = compressionMethod === 0 ? uncompressedSize : bufferView.getUint32(18, true);
     // 26 - File name length (n)
     const fileNameLength = bufferView.getUint16(26, true);
     // 28 - Extra field length (m)
@@ -163,7 +168,7 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
         }
     }*/
 
-    return { start: fileDataStart, length: Math.min(rawEntry.compressedSize, totalLength - fileDataStart) };
+    return { start: fileDataStart, length: Math.min(compressedSize, totalLength - fileDataStart) };
 };
 
 const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry => {
@@ -408,10 +413,11 @@ const readEntries = async (
     options: ReadOptions,
     centralDirectoryOffset: number,
     centralDirectorySize: number,
-    rawEntryCount: number,
     comment: string,
     rawComment: Uint8Array
 ): Promise<Zip> => {
+    const totalLength = await reader.length();
+
     // archives may have arbitrary data in the beginning,
     // i.e. an executable header for self-extracting ZIPs
     const zipStart = await seek(reader, LOCAL_FILE_HEADER_SIGNATURE);
@@ -427,7 +433,7 @@ const readEntries = async (
 
     let readEntryCursor = 0;
     const rawEntries: RawEntry[] = [];
-    for (let e = 0; e < rawEntryCount; ++e) {
+    while (true) {
         const entryOffset = allEntriesBuffer.byteOffset + readEntryCursor;
 
         const remaining = allEntriesBuffer.buffer.byteLength - entryOffset;
@@ -440,7 +446,8 @@ const readEntries = async (
         // 0 - Central directory file header signature
         const signature = buffer.getUint32(0, true);
         if (signature !== CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE) {
-            throw new Error(`Invalid central directory file header signature (0x${signature.toString(16)})`);
+            break; // end of central directory
+            // throw new Error(`Invalid central directory file header signature (0x${signature.toString(16)})`);
         }
 
         const rawEntry: RawEntry = {
@@ -484,15 +491,19 @@ const readEntries = async (
 
         readEntryCursor += ENTRY_HEADER_SIZE;
 
-        const data = allEntriesBuffer.subarray(
-            readEntryCursor,
-            readEntryCursor + rawEntry.fileNameLength + rawEntry.extraFieldLength + rawEntry.fileCommentLength
-        );
+        const dataLen = rawEntry.fileNameLength + rawEntry.extraFieldLength + rawEntry.fileCommentLength;
 
-        readEntryCursor += data.length;
-        readCommonData(rawEntry, data, options);
+        // discard entries with local file headers or data out of bounds
+        if (rawEntry.relativeOffsetOfLocalHeader < totalLength) {
+            const data = allEntriesBuffer.subarray(readEntryCursor, readEntryCursor + dataLen);
+            readCommonData(rawEntry, data, options);
 
-        rawEntries.push(rawEntry);
+            if (rawEntry.compressedSize < totalLength) {
+                rawEntries.push(rawEntry);
+            }
+        }
+
+        readEntryCursor += dataLen;
     }
 
     return {
@@ -543,13 +554,13 @@ const readZip64CentralDirectory = async (
     // 20 - number of the disk with the start of the central directory  4 bytes
     // 24 - total number of entries in the central directory on this disk         8 bytes
     // 32 - total number of entries in the central directory            8 bytes
-    const entryCount = Number(zip64Eocdr.getBigUint64(32, true));
+    // const entryCount = Number(zip64Eocdr.getBigUint64(32, true));
     // 40 - size of the central directory                               8 bytes
     const centralDirectorySize = Number(zip64Eocdr.getBigUint64(40, true));
     // 48 - offset of start of central directory with respect to the starting disk number     8 bytes
     const centralDirectoryOffset = Number(zip64Eocdr.getBigUint64(48, true));
     // 56 - zip64 extensible data sector                                (variable size)
-    return readEntries(reader, options, centralDirectoryOffset, centralDirectorySize, entryCount, comment, rawComment);
+    return readEntries(reader, options, centralDirectoryOffset, centralDirectorySize, comment, rawComment);
 };
 
 const EOCDR_WITHOUT_COMMENT_SIZE = 22;
@@ -604,7 +615,6 @@ const findEndOfCentralDirectory = async (reader: Reader, options: ReadOptions, t
                 options,
                 centralDirectoryOffset,
                 centralDirectorySize,
-                entryCount,
                 comment,
                 rawComment
             );
