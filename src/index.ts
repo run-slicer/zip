@@ -1,5 +1,5 @@
 import { type Reader, read, arrayReader, blobReader } from "./reader";
-import { type Decompressor, streamDecompressor } from "./decompress";
+import { type Decompressor, streamDecompressor, UnsupportedCompressionMethodError } from "./decompress";
 
 export interface Commentable {
     comment: string;
@@ -37,7 +37,7 @@ export interface ReadOptions {
     decompressor?: Decompressor;
 }
 
-export { Reader, read, Decompressor, streamDecompressor };
+export { Reader, read, Decompressor, streamDecompressor, UnsupportedCompressionMethodError };
 
 // shorthands for the core API
 

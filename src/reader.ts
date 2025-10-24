@@ -1,4 +1,4 @@
-import type { Entry, Zip, ReadOptions } from "./";
+import { Entry, Zip, ReadOptions, UnsupportedCompressionMethodError, Decompressor } from "./";
 import { streamDecompressor } from "./decompress";
 
 export interface Reader {
@@ -108,13 +108,10 @@ const LOCAL_FILE_HEADER_SIZE = 30;
 interface EntryHeader {
     start: number;
     length: number;
+    method: number;
 }
 
 const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<EntryHeader> => {
-    // if (rawEntry.generalPurposeBitFlag & 0x1) {
-    //     throw new Error("Encrypted entries are not supported");
-    // }
-
     // signature may not be at the actual offset (?), seek forwards
     const signatureOffset = await seek(
         reader,
@@ -124,9 +121,6 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
 
     const buffer = await reader.read(signatureOffset, LOCAL_FILE_HEADER_SIZE);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    // note: maybe this should be passed in or cached on entry
-    // as it's async so there will be at least one tick (not sure about that)
-    const totalLength = await reader.length();
 
     // 0 - Local file header signature = 0x04034b50
     const signature = bufferView.getUint32(0, true);
@@ -139,13 +133,19 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
 
     // 4 - Version needed to extract (minimum)
     // 6 - General purpose bit flag
+    const generalPurposeBitFlag = bufferView.getUint16(6, true);
     // 8 - Compression method
     const compressionMethod = bufferView.getUint16(8, true);
     // 10 - File last modification time
     // 12 - File last modification date
     // 14 - CRC-32
     // 22 - Uncompressed size
-    const uncompressedSize = bufferView.getUint32(22, true);
+    let uncompressedSize = bufferView.getUint32(22, true);
+    if ((generalPurposeBitFlag & 0x1) !== 0) {
+        // adjust for stored compression
+        // traditional encryption prefixes the file data with a header
+        uncompressedSize += 12;
+    }
     // 18 - Compressed size
     const compressedSize = compressionMethod === 0 ? uncompressedSize : bufferView.getUint32(18, true);
     // 26 - File name length (n)
@@ -155,20 +155,33 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
     // 30 - File name
     // 30+n - Extra field
 
-    const fileDataStart = signatureOffset + buffer.length + fileNameLength + extraFieldLength;
-    /*const fileDataEnd = fileDataStart + rawEntry.compressedSize;
-    if (rawEntry.compressedSize !== 0) {
-        // bounds check now, because the read streams will probably not complain loud enough.
-        // since we're dealing with an unsigned offset plus an unsigned size,
-        // we only have 1 thing to check for.
-        if (fileDataEnd > totalLength) {
-            throw new Error(
-                `File data overflows file bounds (${fileDataStart} + ${rawEntry.compressedSize} > ${totalLength})`
-            );
-        }
-    }*/
+    const totalLength = await reader.length();
+    const fileDataStart = signatureOffset + LOCAL_FILE_HEADER_SIZE + fileNameLength + extraFieldLength;
+    return {
+        start: fileDataStart,
+        length: Math.min(compressedSize, totalLength - fileDataStart),
+        method: compressionMethod,
+    };
+};
 
-    return { start: fileDataStart, length: Math.min(compressedSize, totalLength - fileDataStart) };
+const decompress = async (
+    entry: RawEntry,
+    header: EntryHeader,
+    reader: Reader,
+    decompressor: Decompressor
+): Promise<Uint8Array> => {
+    const compressed = await reader.read(header.start, header.length);
+    try {
+        return await decompressor(header.method, compressed);
+    } catch (e) {
+        if (e instanceof UnsupportedCompressionMethodError && header.method !== entry.compressionMethod) {
+            // central directory might specify a different compression method than the local file header
+            // we don't know which one is correct frankly, so try both
+            return decompressor(entry.compressionMethod, compressed);
+        }
+
+        throw e;
+    }
 };
 
 const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry => {
@@ -186,20 +199,16 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
         encrypted: !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
         async blob(type: string = "application/octet-stream"): Promise<Blob> {
-            const { start, length } = await readEntryDataHeader(reader, e);
-            if (length === 0) {
+            const header = await readEntryDataHeader(reader, e);
+            if (header.length === 0) {
                 return new Blob([], { type });
             }
-            if (e.compressionMethod === 0) {
+            if (header.method === 0) {
                 // no compression (stored)
-                return reader.slice(start, length);
+                return reader.slice(header.start, header.length);
             }
 
-            if (!options.decompressor) {
-                throw new Error(`No decompressor available (method ${e.compressionMethod})`);
-            }
-
-            const data = await options.decompressor(e.compressionMethod, await reader.read(start, length));
+            const data = await decompress(e, header, reader, options.decompressor!);
 
             // SharedArrayBuffer cannot be used in Blob, so check for it
             const arrayBufData =
@@ -207,20 +216,16 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
             return new Blob([arrayBufData], { type });
         },
         async bytes(): Promise<Uint8Array> {
-            const { start, length } = await readEntryDataHeader(reader, e);
-            if (length === 0) {
+            const header = await readEntryDataHeader(reader, e);
+            if (header.length === 0) {
                 return new Uint8Array(0);
             }
-            if (e.compressionMethod === 0) {
+            if (header.method === 0) {
                 // no compression (stored)
-                return reader.read(start, length);
+                return reader.read(header.start, header.length);
             }
 
-            if (!options.decompressor) {
-                throw new Error(`No decompressor available (method ${e.compressionMethod})`);
-            }
-
-            return options.decompressor(e.compressionMethod, await reader.read(start, length));
+            return decompress(e, header, reader, options.decompressor!);
         },
         async text(): Promise<string> {
             return options.decoder!.decode(await this.bytes());
@@ -251,9 +256,6 @@ const readCommonData = (rawEntry: RawEntry, data: Uint8Array, options: ReadOptio
         const dataSize = Math.min(extraFieldView.getUint16(i + 2, true), extraFieldBuffer.length - i - 4);
         const dataStart = i + 4;
         const dataEnd = dataStart + dataSize;
-        // if (dataEnd > extraFieldBuffer.length) {
-        //     throw new Error("Extra field length exceeds extra field buffer size");
-        // }
 
         rawEntry.extraFields.push({
             id: headerId,
@@ -310,7 +312,6 @@ const readCommonData = (rawEntry: RawEntry, data: Uint8Array, options: ReadOptio
             }
 
             rawEntry.relativeOffsetOfLocalHeader = Number(zip64EiefBuffer.getBigUint64(index, true));
-            // index += 8;
         }
         // 24 - Disk Start Number      4 bytes
     }
@@ -322,28 +323,12 @@ const readCommonData = (rawEntry: RawEntry, data: Uint8Array, options: ReadOptio
             e.id === 0x7075 &&
             e.data.length >= 6 && // too short to be meaningful
             e.data[0] === 1 && // Version       1 byte      version of this extra field, currently 1
-            new DataView(e.data.buffer, e.data.byteOffset, e.data.byteLength).getUint32(1, true),
-        0 // crc.unsigned(rawEntry.nameBytes)
-    ); // NameCRC32     4 bytes     File Name Field CRC32 Checksum
-    // > If the CRC check fails, this UTF-8 Path Extra Field should be
-    // > ignored and the File Name field in the header should be used instead.
+            new DataView(e.data.buffer, e.data.byteOffset, e.data.byteLength).getUint32(1, true)
+    );
     if (nameField) {
         // UnicodeName Variable UTF-8 version of the entry File Name
         rawEntry.rawFileName = nameField.data.subarray(5);
         rawEntry.fileName = utf8Decoder.decode(rawEntry.rawFileName);
-    }
-
-    // validate file size
-    if (rawEntry.compressionMethod === 0) {
-        let expectedCompressedSize = rawEntry.uncompressedSize;
-        if ((rawEntry.generalPurposeBitFlag & 0x1) !== 0) {
-            // traditional encryption prefixes the file data with a header
-            expectedCompressedSize += 12;
-        }
-        if (rawEntry.compressedSize !== expectedCompressedSize) {
-            rawEntry.compressedSize = expectedCompressedSize;
-            // throw new Error(`Compressed size mismatch for stored file: ${rawEntry.compressedSize} != ${expectedCompressedSize}`);
-        }
     }
 };
 
@@ -390,7 +375,6 @@ const readLocalEntries = async (reader: Reader, options: ReadOptions): Promise<Z
         offset += LOCAL_FILE_HEADER_SIZE;
 
         const data = await reader.read(offset, rawEntry.fileNameLength + rawEntry.extraFieldLength);
-
         offset += data.byteLength;
         readCommonData(rawEntry, data, options);
 
@@ -447,7 +431,6 @@ const readEntries = async (
         const signature = buffer.getUint32(0, true);
         if (signature !== CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE) {
             break; // end of central directory
-            // throw new Error(`Invalid central directory file header signature (0x${signature.toString(16)})`);
         }
 
         const rawEntry: RawEntry = {
@@ -484,10 +467,6 @@ const readEntries = async (
             // 42 - Relative offset of local file header
             relativeOffsetOfLocalHeader: buffer.getUint32(42, true),
         };
-
-        // if (rawEntry.generalPurposeBitFlag & 0x40) {
-        //     throw new Error("Strong encryption is not supported");
-        // }
 
         readEntryCursor += ENTRY_HEADER_SIZE;
 
@@ -554,7 +533,6 @@ const readZip64CentralDirectory = async (
     // 20 - number of the disk with the start of the central directory  4 bytes
     // 24 - total number of entries in the central directory on this disk         8 bytes
     // 32 - total number of entries in the central directory            8 bytes
-    // const entryCount = Number(zip64Eocdr.getBigUint64(32, true));
     // 40 - size of the central directory                               8 bytes
     const centralDirectorySize = Number(zip64Eocdr.getBigUint64(40, true));
     // 48 - offset of start of central directory with respect to the starting disk number     8 bytes
@@ -582,11 +560,6 @@ const findEndOfCentralDirectory = async (reader: Reader, options: ReadOptions, t
         // 0 - End of central directory signature
         const eocdr = new DataView(data.buffer, data.byteOffset + i, data.byteLength - i);
         // 4 - Number of this disk
-        // const diskNumber = eocdr.getUint16(4, true);
-        // if (diskNumber !== 0) {
-        //     throw new Error(`Multi-volume ZIP files are not supported (volume ${diskNumber})`);
-        // }
-
         // 6 - Disk where central directory starts
         // 8 - Number of central directory records on this disk
         // 10 - Total number of central directory records
@@ -596,11 +569,7 @@ const findEndOfCentralDirectory = async (reader: Reader, options: ReadOptions, t
         // 16 - Offset of start of central directory, relative to start of archive
         const centralDirectoryOffset = eocdr.getUint32(16, true);
         // 20 - Comment length
-        const commentLength = /* eocdr.getUint16(20, true) */ eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
-        // const expectedCommentLength = eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
-        // if (commentLength !== expectedCommentLength) {
-        //     throw new Error(`Invalid comment length (expected ${expectedCommentLength}, actual ${commentLength})`);
-        // }
+        const commentLength = eocdr.byteLength - EOCDR_WITHOUT_COMMENT_SIZE;
 
         // 22 - Comment
         // the encoding is always cp437.
