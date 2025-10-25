@@ -9,12 +9,15 @@ describe("reader", () => {
         it(`read ${path}`, async () => {
             const zip = await readBytes(data /*, { decoder: new TextDecoder("shift-jis") }*/);
 
-            console.log(zip);
+            // console.log(zip);
             expect(zip.entries.length).greaterThan(0);
             for (const entry of zip.entries) {
                 try {
                     await entry.blob();
-                    await entry.bytes();
+                    const bytes = await entry.bytes();
+                    if (bytes.length === 0 && !entry.isDirectory) {
+                        console.warn(`Entry ${entry.name} has zero bytes`);
+                    }
                 } catch (e) {
                     console.log(entry);
                     throw e;

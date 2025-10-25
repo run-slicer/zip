@@ -129,7 +129,8 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
     }
 
     // all this should be redundant
-    // except some ZIP writers lie in the central directory, so get the actual size from the local file header
+    // except some ZIP writers lie in either central directory or local file header
+    // so try figuring out the correct values
 
     // 4 - Version needed to extract (minimum)
     // 6 - General purpose bit flag
@@ -147,7 +148,7 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
         uncompressedSize += 12;
     }
     // 18 - Compressed size
-    const compressedSize = compressionMethod === 0 ? uncompressedSize : bufferView.getUint32(18, true);
+    let compressedSize = compressionMethod === 0 ? uncompressedSize : bufferView.getUint32(18, true);
     // 26 - File name length (n)
     const fileNameLength = bufferView.getUint16(26, true);
     // 28 - Extra field length (m)
@@ -155,11 +156,23 @@ const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<
     // 30 - File name
     // 30+n - Extra field
 
-    const totalLength = await reader.length();
     const fileDataStart = signatureOffset + LOCAL_FILE_HEADER_SIZE + fileNameLength + extraFieldLength;
+
+    const totalLength = await reader.length();
+    const maxLength = totalLength - fileDataStart;
+    if (
+        compressedSize > maxLength ||
+        (rawEntry.compressedSize > compressedSize && rawEntry.compressedSize <= maxLength)
+    ) {
+        // fall back to central directory value if local value is:
+        // - larger than the remaining file size
+        // - smaller than central directory value (within bounds)
+        compressedSize = rawEntry.compressedSize;
+    }
+
     return {
         start: fileDataStart,
-        length: Math.min(compressedSize, totalLength - fileDataStart),
+        length: Math.min(compressedSize, maxLength),
         method: compressionMethod,
     };
 };
@@ -330,6 +343,17 @@ const readCommonData = (rawEntry: RawEntry, data: Uint8Array, options: ReadOptio
         rawEntry.rawFileName = nameField.data.subarray(5);
         rawEntry.fileName = utf8Decoder.decode(rawEntry.rawFileName);
     }
+
+    // fix wrong information about stored files
+    if (rawEntry.compressionMethod === 0) {
+        let expected = rawEntry.uncompressedSize;
+        if ((rawEntry.generalPurposeBitFlag & 0x1) !== 0) {
+            // traditional encryption prefixes the file data with a header
+            expected += 12;
+        }
+
+        rawEntry.compressedSize = expected;
+    }
 };
 
 const readLocalEntries = async (reader: Reader, options: ReadOptions): Promise<Zip> => {
@@ -472,14 +496,12 @@ const readEntries = async (
 
         const dataLen = rawEntry.fileNameLength + rawEntry.extraFieldLength + rawEntry.fileCommentLength;
 
-        // discard entries with local file headers or data out of bounds
+        // discard entries with local file headers out of bounds
         if (rawEntry.relativeOffsetOfLocalHeader < totalLength) {
             const data = allEntriesBuffer.subarray(readEntryCursor, readEntryCursor + dataLen);
             readCommonData(rawEntry, data, options);
 
-            if (rawEntry.compressedSize < totalLength) {
-                rawEntries.push(rawEntry);
-            }
+            rawEntries.push(rawEntry);
         }
 
         readEntryCursor += dataLen;
