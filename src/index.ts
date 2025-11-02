@@ -33,7 +33,9 @@ export interface Entry extends Commentable {
 }
 
 export interface ReadOptions {
+    // if you're reading ZIPs with non-UTF-8 filenames/comments, e.g. Shift-JIS
     decoder?: TextDecoder;
+    // if you want to decompress anything other than Deflate or you don't have the Compression Streams API
     decompressor?: Decompressor;
 }
 
