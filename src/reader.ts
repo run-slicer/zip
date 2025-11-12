@@ -112,10 +112,29 @@ interface EntryHeader {
 }
 
 const readEntryDataHeader = async (reader: Reader, options: ReadOptions, rawEntry: RawEntry): Promise<EntryHeader> => {
+    const totalLength = await reader.length();
+    if (options.naive) {
+        // presume the central directory has the same data as the local file header
+        const fileDataStart =
+            rawEntry.zipStart +
+            rawEntry.relativeOffsetOfLocalHeader +
+            LOCAL_FILE_HEADER_SIZE +
+            rawEntry.fileNameLength +
+            rawEntry.extraFieldLength;
+
+        return {
+            start: fileDataStart,
+            length: Math.min(rawEntry.compressedSize, totalLength - fileDataStart),
+            method: rawEntry.compressionMethod,
+        };
+    }
+
     // signature may not be at the actual offset (?), seek forwards
-    const signatureOffset = options.naive
-        ? rawEntry.relativeOffsetOfLocalHeader
-        : await seek(reader, LOCAL_FILE_HEADER_SIGNATURE, rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader);
+    const signatureOffset = await seek(
+        reader,
+        LOCAL_FILE_HEADER_SIGNATURE,
+        rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader
+    );
 
     const buffer = await reader.read(signatureOffset, LOCAL_FILE_HEADER_SIZE);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -155,8 +174,6 @@ const readEntryDataHeader = async (reader: Reader, options: ReadOptions, rawEntr
     // 30+n - Extra field
 
     const fileDataStart = signatureOffset + LOCAL_FILE_HEADER_SIZE + fileNameLength + extraFieldLength;
-
-    const totalLength = await reader.length();
     const maxLength = totalLength - fileDataStart;
     if (
         compressedSize > maxLength ||
