@@ -35,9 +35,15 @@ export interface Entry extends Commentable {
 
 export interface ReadOptions {
     // if you're reading ZIPs with non-UTF-8 filenames/comments, e.g. Shift-JIS
+    // defaults to UTF-8
     decoder?: TextDecoder;
     // if you want to decompress anything other than Deflate or you don't have the Compression Streams API
+    // defaults to a DecompressionStream-based decompressor
     decompressor?: Decompressor;
+    // does not do signature seeking, may be faster for valid ZIPs on e.g. a remote source
+    // this will not work for ZIPs with leading junk data
+    // defaults to false
+    naive?: boolean;
 }
 
 export { Reader, read, Decompressor, streamDecompressor, UnsupportedCompressionMethodError };

@@ -111,13 +111,11 @@ interface EntryHeader {
     method: number;
 }
 
-const readEntryDataHeader = async (reader: Reader, rawEntry: RawEntry): Promise<EntryHeader> => {
+const readEntryDataHeader = async (reader: Reader, options: ReadOptions, rawEntry: RawEntry): Promise<EntryHeader> => {
     // signature may not be at the actual offset (?), seek forwards
-    const signatureOffset = await seek(
-        reader,
-        LOCAL_FILE_HEADER_SIGNATURE,
-        rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader
-    );
+    const signatureOffset = options.naive
+        ? rawEntry.relativeOffsetOfLocalHeader
+        : await seek(reader, LOCAL_FILE_HEADER_SIGNATURE, rawEntry.zipStart + rawEntry.relativeOffsetOfLocalHeader);
 
     const buffer = await reader.read(signatureOffset, LOCAL_FILE_HEADER_SIZE);
     const bufferView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -213,7 +211,7 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
         encrypted: !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,
         async blob(type: string = "application/octet-stream"): Promise<Blob> {
-            const header = await readEntryDataHeader(reader, e);
+            const header = await readEntryDataHeader(reader, options, e);
             if (header.length === 0) {
                 return new Blob([], { type });
             }
@@ -230,7 +228,7 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
             return new Blob([arrayBufData], { type });
         },
         async bytes(): Promise<Uint8Array> {
-            const header = await readEntryDataHeader(reader, e);
+            const header = await readEntryDataHeader(reader, options, e);
             if (header.length === 0) {
                 return new Uint8Array(0);
             }
@@ -429,14 +427,16 @@ const readEntries = async (
 
     // archives may have arbitrary data in the beginning,
     // i.e. an executable header for self-extracting ZIPs
-    const zipStart = await seek(reader, LOCAL_FILE_HEADER_SIGNATURE);
+    const zipStart = options.naive ? 0 : await seek(reader, LOCAL_FILE_HEADER_SIGNATURE);
 
-    // signature may not be at the actual offset (?), seek forwards
-    centralDirectoryOffset = await seek(
-        reader,
-        CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE,
-        zipStart + centralDirectoryOffset
-    );
+    if (!options.naive) {
+        // signature may not be at the actual offset (?), seek forwards
+        centralDirectoryOffset = await seek(
+            reader,
+            CENTRAL_DIRECTORY_FILE_HEADER_SIGNATURE,
+            zipStart + centralDirectoryOffset
+        );
+    }
 
     const allEntriesBuffer = await reader.read(centralDirectoryOffset, centralDirectorySize);
 

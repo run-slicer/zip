@@ -24,6 +24,11 @@ describe("reader", () => {
                 }
             }
         });
+
+        /*it(`read naive ${path}`, async () => {
+            const zip = await readBytes(data, { naive: true });
+            console.log(zip);
+        });*/
     };
 
     const walk = (path: string) => {
