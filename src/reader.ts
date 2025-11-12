@@ -208,6 +208,7 @@ const createEntry = (e: RawEntry, reader: Reader, options: ReadOptions): Entry =
         compressionMethod: e.compressionMethod,
         uncompressedSize: e.uncompressedSize,
         versionMadeBy: e.versionMadeBy,
+        crc32: e.crc32,
         lastModDate: dosDateTimeToDate(e.lastModFileDate, e.lastModFileTime),
         isDirectory: e.uncompressedSize === 0 && e.name.endsWith("/"),
         encrypted: !!(e.generalPurposeBitFlag & 0x1) || !!(e.generalPurposeBitFlag & 0x40) /* strong encryption */,

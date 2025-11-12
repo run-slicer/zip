@@ -30,6 +30,7 @@ export interface Entry extends Commentable {
     encrypted: boolean;
     externalFileAttributes: number;
     versionMadeBy: number;
+    crc32: number;
 }
 
 export interface ReadOptions {
